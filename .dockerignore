@@ -1,0 +1,11 @@
+node_modules/
+.wwebjs_auth/
+.wwebjs_cache/
+.env
+config.json
+sent_log.json
+application.log
+.git/
+.gitignore
+Dockerfile
+.dockerignore
