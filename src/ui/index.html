@@ -80,6 +80,10 @@
             <div id="qrContainer" class="d-none">
                 <p class="mb-3">Escanea el código QR con WhatsApp para iniciar sesión:</p>
                 <div id="qrCode" class="mb-3"></div>
+                <div id="qrLoading" class="text-muted mt-2">
+                    <div class="spinner-border spinner-border-sm text-success" role="status"></div>
+                    <span id="qrStatusText">Generando nuevo código... (esto puede tardar 1 min en Render)</span>
+                </div>
             </div>
             <div id="authenticatedInfo" class="d-none">
                 <div class="alert alert-success">
@@ -365,6 +369,9 @@
             qr.addData(qrCode);
             qr.make();
             document.getElementById('qrCode').innerHTML = qr.createImgTag(8);
+            
+            // Ocultar el spinner cuando el QR ya se muestra
+            document.getElementById('qrLoading').classList.add('d-none');
         }
 
         async function loadConfig() {

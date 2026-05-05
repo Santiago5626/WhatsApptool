@@ -47,6 +47,7 @@ let qrCode = null;
 let isAuthenticated = false;
 let isCancelled = false;
 let progressClient = null;
+let initializationStatus = 'STARTING';
 const SENT_LOG_PATH = path.join(__dirname, '..', 'sent_log.json');
 
 // Asegurar que el log de enviados existe
@@ -152,30 +153,39 @@ function initializeWhatsAppClient() {
     });
 
     client.on('qr', (qr) => {
-        console.log('Nuevo código QR generado');
+        console.log('>>> Nuevo código QR generado y listo para escanear');
         qrCode = qr;
         isAuthenticated = false;
+        initializationStatus = 'QR_READY';
     });
 
     client.on('ready', () => {
-        console.log('Cliente WhatsApp listo');
+        console.log('>>> Cliente WhatsApp listo y conectado');
         isAuthenticated = true;
         qrCode = null;
+        initializationStatus = 'CONNECTED';
+    });
+
+    client.on('loading_screen', (percent, message) => {
+        console.log('>>> Cargando WhatsApp:', percent, '%', message);
+        initializationStatus = `LOADING_${percent}`;
     });
 
     client.on('auth_failure', (msg) => {
-        console.error('Fallo de autenticación:', msg);
+        console.error('>>> Fallo de autenticación:', msg);
         isAuthenticated = false;
         qrCode = null;
+        initializationStatus = 'AUTH_FAILURE';
     });
 
     client.on('disconnected', (reason) => {
-        console.log('Cliente desconectado:', reason);
+        console.log('>>> Cliente desconectado:', reason);
         isAuthenticated = false;
         qrCode = null;
+        initializationStatus = 'DISCONNECTED';
         setTimeout(() => {
             client = initializeWhatsAppClient();
-        }, 1000);
+        }, 5000);
     });
 
     client.initialize().catch(err => {
