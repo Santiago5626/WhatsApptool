@@ -1,6 +1,8 @@
+require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const fs = require('fs').promises;
+const session = require('express-session');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const logger = require('./utils/logger');
 const multer = require('multer');
@@ -17,18 +19,25 @@ const upload = multer({
             'application/octet-stream',
             'application/excel',
             'application/x-excel',
-            'application/x-msexcel'
+            'application/x-msexcel',
+            'application/vnd.ms-office',
+            'application/msword',
+            'application/vnd.oasis.opendocument.spreadsheet'
         ];
-        if (allowedTypes.includes(file.mimetype)) {
+        
+        const extension = path.extname(file.originalname).toLowerCase();
+        const isExcelExtension = ['.xls', '.xlsx', '.csv', '.ods'].includes(extension);
+        
+        if (allowedTypes.includes(file.mimetype) || isExcelExtension) {
             cb(null, true);
         } else {
-            cb(new Error('Solo se permiten archivos Excel (.xls, .xlsx)'));
+            cb(new Error('Formato de archivo no soportado. Por favor sube un archivo Excel (.xls, .xlsx)'));
         }
     }
 });
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'ui')));
+// Eliminado el static de aquí para protegerlo más abajo
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
 
@@ -38,6 +47,49 @@ let qrCode = null;
 let isAuthenticated = false;
 let isCancelled = false;
 let progressClient = null;
+const SENT_LOG_PATH = path.join(__dirname, '..', 'sent_log.json');
+
+// Asegurar que el log de enviados existe
+async function initSentLog() {
+    try {
+        await fs.access(SENT_LOG_PATH);
+    } catch {
+        await fs.writeFile(SENT_LOG_PATH, JSON.stringify([]));
+    }
+}
+initSentLog();
+
+// Configuración de Sesiones y Usuarios
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'whatsapp-bulk-messenger-secret-key',
+    resave: false,
+    saveUninitialized: true,
+    cookie: { secure: false } // Cambiar a true si usas HTTPS en Render
+}));
+
+// Función para obtener usuarios de variables de entorno
+function getAllowedUsers() {
+    const usersEnv = process.env.ALLOWED_USERS || 'admin:admin123';
+    const users = {};
+    usersEnv.split(',').forEach(u => {
+        const [username, password] = u.split(':');
+        if (username && password) users[username] = password;
+    });
+    return users;
+}
+
+// Middleware de Autenticación
+const requireAuth = (req, res, next) => {
+    if (req.session.user) {
+        next();
+    } else {
+        if (req.xhr || req.path.startsWith('/api/')) {
+            res.status(401).json({ error: 'No autorizado' });
+        } else {
+            res.redirect('/login');
+        }
+    }
+};
 
 // Cargar configuración inicial
 async function loadConfig() {
@@ -83,7 +135,7 @@ function initializeWhatsAppClient() {
     client = new Client({
         authStrategy: new LocalAuth(),
         puppeteer: {
-            headless: true,
+            headless: true, // headless: 'new' is default in newer puppeteer, but true works fine here
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -91,7 +143,10 @@ function initializeWhatsAppClient() {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--disable-gpu'
+                '--disable-gpu',
+                '--disable-extensions',
+                '--disable-web-security',
+                '--no-default-browser-check'
             ]
         }
     });
@@ -140,9 +195,49 @@ function sendProgressUpdate(data) {
     }
 }
 
-// Rutas
+// Rutas Públicas
+app.get('/login', (req, res) => {
+    res.sendFile(path.join(__dirname, 'ui', 'login.html'));
+});
+
+app.post('/api/login', (req, res) => {
+    const { username, password } = req.body;
+    const allowedUsers = getAllowedUsers();
+    
+    if (allowedUsers[username] && allowedUsers[username] === password) {
+        req.session.user = username;
+        res.json({ success: true });
+    } else {
+        res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
+    }
+});
+
+// --- EL MURO DE SEGURIDAD ---
+app.use(requireAuth);
+
+// Rutas y Archivos Protegidos (Solo accesibles después de login)
+app.use(express.static(path.join(__dirname, 'ui')));
+
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'ui', 'index.html'));
+});
+
+app.get('/api/sent-numbers', requireAuth, async (req, res) => {
+    try {
+        const data = await fs.readFile(SENT_LOG_PATH, 'utf8');
+        res.json(JSON.parse(data));
+    } catch (error) {
+        res.json([]);
+    }
+});
+
+app.post('/api/clear-sent-log', async (req, res) => {
+    try {
+        await fs.writeFile(SENT_LOG_PATH, JSON.stringify([]));
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Error al limpiar el log' });
+    }
 });
 
 app.get('/api/auth-status', (req, res) => {
@@ -155,6 +250,7 @@ app.get('/api/auth-status', (req, res) => {
 
 app.post('/api/logout', async (req, res) => {
     try {
+        req.session.destroy();
         if (client) {
             console.log('Cerrando sesión de WhatsApp...');
             await client.destroy();
@@ -316,11 +412,21 @@ app.post('/api/send-messages', async (req, res) => {
             return res.status(401).json({ error: 'No autenticado en WhatsApp' });
         }
 
+        // Obtener datos del cuerpo de la petición o del config
+        const { message: bodyMessage, numbers: bodyNumbers } = req.body;
         const config = await loadConfig();
         
-        if (!config.message || !config.numbers || config.numbers.length === 0) {
+        const finalMessage = bodyMessage || config.message;
+        const finalNumbers = bodyNumbers || config.numbers;
+        
+        if (!finalMessage || !finalNumbers || finalNumbers.length === 0) {
             return res.status(400).json({ error: 'No hay mensaje o números configurados' });
         }
+
+        // Actualizar config con los últimos datos usados
+        config.message = finalMessage;
+        config.numbers = finalNumbers;
+        await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2));
 
         // Enviar respuesta inmediata
         res.json({ success: true });
@@ -330,8 +436,8 @@ app.post('/api/send-messages', async (req, res) => {
 
         // Procesar mensajes en lotes
         const batches = [];
-        for (let i = 0; i < config.numbers.length; i += config.messagesBeforePause) {
-            batches.push(config.numbers.slice(i, i + config.messagesBeforePause));
+        for (let i = 0; i < finalNumbers.length; i += config.messagesBeforePause) {
+            batches.push(finalNumbers.slice(i, i + config.messagesBeforePause));
         }
 
         let successCount = 0;
@@ -342,7 +448,7 @@ app.post('/api/send-messages', async (req, res) => {
                 sendProgressUpdate({
                     status: 'cancelled',
                     currentNumber: successCount + errorCount,
-                    totalNumbers: config.numbers.length,
+                    totalNumbers: finalNumbers.length,
                     currentBatch: batchIndex + 1,
                     totalBatches: batches.length,
                     successCount,
@@ -360,13 +466,34 @@ app.post('/api/send-messages', async (req, res) => {
                 const currentNumber = batchIndex * config.messagesBeforePause + messageIndex + 1;
 
                 try {
-                    await client.sendMessage(number + '@c.us', config.message);
-                    successCount++;
+                    const chatId = number + '@c.us';
+                    const isRegistered = await client.isRegisteredUser(chatId);
+                    
+                    if (isRegistered) {
+                        await client.sendMessage(chatId, finalMessage);
+                        successCount++;
+                        
+                        // Registrar como enviado con éxito
+                        try {
+                            const sentData = await fs.readFile(SENT_LOG_PATH, 'utf8');
+                            const sentNumbers = JSON.parse(sentData);
+                            if (!sentNumbers.includes(number)) {
+                                sentNumbers.push(number);
+                                await fs.writeFile(SENT_LOG_PATH, JSON.stringify(sentNumbers));
+                            }
+                        } catch (e) {
+                            console.error('Error actualizando sent_log:', e);
+                        }
+                        
+                    } else {
+                        console.log(`Número no registrado: ${number}`);
+                        errorCount++;
+                    }
                     
                     sendProgressUpdate({
                         status: 'sending',
                         currentNumber,
-                        totalNumbers: config.numbers.length,
+                        totalNumbers: finalNumbers.length,
                         currentBatch: batchIndex + 1,
                         totalBatches: batches.length,
                         successCount,
@@ -387,7 +514,7 @@ app.post('/api/send-messages', async (req, res) => {
                 sendProgressUpdate({
                     status: 'paused',
                     currentNumber: (batchIndex + 1) * config.messagesBeforePause,
-                    totalNumbers: config.numbers.length,
+                    totalNumbers: finalNumbers.length,
                     currentBatch: batchIndex + 1,
                     totalBatches: batches.length,
                     successCount,
@@ -402,8 +529,8 @@ app.post('/api/send-messages', async (req, res) => {
         if (!isCancelled) {
             sendProgressUpdate({
                 status: 'completed',
-                currentNumber: config.numbers.length,
-                totalNumbers: config.numbers.length,
+                currentNumber: finalNumbers.length,
+                totalNumbers: finalNumbers.length,
                 currentBatch: batches.length,
                 totalBatches: batches.length,
                 successCount,
@@ -420,6 +547,15 @@ app.post('/api/send-messages', async (req, res) => {
             });
         }
     }
+});
+
+// Manejador de errores global para asegurar respuestas JSON
+app.use((err, req, res, next) => {
+    console.error('Error no manejado:', err);
+    res.status(err.status || 500).json({
+        error: err.message || 'Error interno del servidor',
+        details: err.details || null
+    });
 });
 
 const PORT = 3000;
