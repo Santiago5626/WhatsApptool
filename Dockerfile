@@ -40,6 +40,7 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     xdg-utils \
     libxshmfence1 \
+    chromium \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -52,17 +53,15 @@ COPY package*.json ./
 # Instalar dependencias de Node
 RUN npm install
 
-# Descargar el binario de Chrome para Puppeteer
-RUN npx puppeteer browsers install chrome
-
 # Copiar el resto del código fuente
 COPY . .
 
 # Exponer el puerto que usa Express
 EXPOSE 3000
 
-# Variable de entorno para Puppeteer
-ENV PUPPETEER_CACHE_DIR=/app/.cache/puppeteer
+# Variables de entorno críticas para Puppeteer en Render/Docker
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Iniciar la aplicación
 CMD ["npm", "start"]
