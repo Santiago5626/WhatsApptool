@@ -34,8 +34,8 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libxi6 \
     libxrandr2 \
-    librender1 \
-    libss2 \
+    libxrender1 \
+    libxss1 \
     libxtst6 \
     lsb-release \
     xdg-utils \
