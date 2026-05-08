@@ -48,9 +48,9 @@ let isAuthenticated = false;
 let isCancelled = false;
 let progressClient = null;
 let initializationStatus = 'STARTING';
-const SENT_LOG_PATH = path.join(__dirname, '..', 'sent_log.json');
+const SENT_LOG_PATH = path.join(__dirname, '..', 'sent_history.json');
 
-// Asegurar que el log de enviados existe
+// Asegurar que el historial existe
 async function initSentLog() {
     try {
         await fs.access(SENT_LOG_PATH);
@@ -232,10 +232,12 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'ui', 'index.html'));
 });
 
-app.get('/api/sent-numbers', requireAuth, async (req, res) => {
+app.get('/api/sent-numbers', async (req, res) => {
     try {
         const data = await fs.readFile(SENT_LOG_PATH, 'utf8');
-        res.json(JSON.parse(data));
+        const history = JSON.parse(data);
+        // Devolver solo los números para compatibilidad con la UI vieja por ahora
+        res.json(history.map(entry => typeof entry === 'string' ? entry : entry.number));
     } catch (error) {
         res.json([]);
     }
@@ -444,108 +446,86 @@ app.post('/api/send-messages', async (req, res) => {
         // Reiniciar estado de cancelación
         isCancelled = false;
 
-        // Procesar mensajes en lotes
-        const batches = [];
-        for (let i = 0; i < finalNumbers.length; i += config.messagesBeforePause) {
-            batches.push(finalNumbers.slice(i, i + config.messagesBeforePause));
+        // Cargar historial para filtrar y verificar límites
+        const logData = await fs.readFile(SENT_LOG_PATH, 'utf8');
+        const history = JSON.parse(logData);
+        const now = Date.now();
+        const oneHourAgo = now - (60 * 60 * 1000);
+        const twentyFourHoursAgo = now - (24 * 60 * 60 * 1000);
+
+        // Filtrar solo los números que no se han enviado NUNCA o al menos no en esta campaña
+        const sentNumbers = history.map(h => typeof h === 'string' ? h : h.number);
+        const pendingNumbers = finalNumbers.filter(n => !sentNumbers.includes(n));
+
+        if (pendingNumbers.length === 0) {
+            return sendProgressUpdate({ status: 'completed', message: 'Todos los números ya fueron enviados.' });
         }
 
         let successCount = 0;
         let errorCount = 0;
+        let processedInThisSession = 0;
 
-        for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-            if (isCancelled) {
-                sendProgressUpdate({
-                    status: 'cancelled',
-                    currentNumber: successCount + errorCount,
-                    totalNumbers: finalNumbers.length,
-                    currentBatch: batchIndex + 1,
-                    totalBatches: batches.length,
-                    successCount,
-                    errorCount
-                });
-                return;
+        for (const number of pendingNumbers) {
+            if (isCancelled) break;
+
+            // RE-VERIFICAR LÍMITES ANTES DE CADA MENSAJE
+            const currentLog = JSON.parse(await fs.readFile(SENT_LOG_PATH, 'utf8'));
+            const sentInLastHour = currentLog.filter(h => h.time > Date.now() - 3600000).length;
+            const sentInLastDay = currentLog.filter(h => h.time > Date.now() - 86400000).length;
+
+            if (sentInLastDay >= 150) {
+                sendProgressUpdate({ status: 'paused', message: 'Límite diario alcanzado (150). Por seguridad, el envío se detiene hoy.' });
+                break;
             }
 
-            const batch = batches[batchIndex];
-            
-            for (let messageIndex = 0; messageIndex < batch.length; messageIndex++) {
-                if (isCancelled) break;
+            if (sentInLastHour >= 50) {
+                const waitMinutes = 60; 
+                sendProgressUpdate({ status: 'paused', message: `Límite por hora alcanzado (50). Pausando ${waitMinutes} min...` });
+                await new Promise(resolve => setTimeout(resolve, waitMinutes * 60 * 1000));
+                continue; // Re-intentar después de la pausa
+            }
 
-                const number = batch[messageIndex];
-                const currentNumber = batchIndex * config.messagesBeforePause + messageIndex + 1;
+            try {
+                const chatId = `${number}@c.us`;
+                const isRegistered = await client.isRegisteredUser(chatId);
 
-                try {
-                    const chatId = number + '@c.us';
-                    const isRegistered = await client.isRegisteredUser(chatId);
+                if (isRegistered) {
+                    await client.sendMessage(chatId, finalMessage);
+                    successCount++;
                     
-                    if (isRegistered) {
-                        await client.sendMessage(chatId, finalMessage);
-                        successCount++;
-                        
-                        // Registrar como enviado con éxito
-                        try {
-                            const sentData = await fs.readFile(SENT_LOG_PATH, 'utf8');
-                            const sentNumbers = JSON.parse(sentData);
-                            if (!sentNumbers.includes(number)) {
-                                sentNumbers.push(number);
-                                await fs.writeFile(SENT_LOG_PATH, JSON.stringify(sentNumbers));
-                            }
-                        } catch (e) {
-                            console.error('Error actualizando sent_log:', e);
-                        }
-                        
-                    } else {
-                        console.log(`Número no registrado: ${number}`);
-                        errorCount++;
-                    }
-                    
-                    sendProgressUpdate({
-                        status: 'sending',
-                        currentNumber,
-                        totalNumbers: finalNumbers.length,
-                        currentBatch: batchIndex + 1,
-                        totalBatches: batches.length,
-                        successCount,
-                        errorCount
-                    });
-
-                    await new Promise(resolve => setTimeout(resolve, config.delayBetweenMessagesMs));
-                } catch (error) {
-                    console.error(`Error al enviar mensaje a ${number}:`, error);
+                    // Registrar con timestamp
+                    currentLog.push({ number, time: Date.now() });
+                    await fs.writeFile(SENT_LOG_PATH, JSON.stringify(currentLog));
+                } else {
                     errorCount++;
                 }
+            } catch (error) {
+                console.error(`Error enviando a ${number}:`, error);
+                errorCount++;
             }
 
-            if (!isCancelled && batchIndex < batches.length - 1) {
-                const pauseMs = config.pauseDurationMinutes * 60 * 1000;
-                const pauseEndTime = Date.now() + pauseMs;
+            processedInThisSession++;
+            const totalPending = pendingNumbers.length;
+            const progress = Math.round((processedInThisSession / totalPending) * 100);
+            
+            // Tiempo estimado: 75 seg promedio entre 30s y 120s
+            const remaining = totalPending - processedInThisSession;
+            const estSeconds = remaining * 75;
 
-                sendProgressUpdate({
-                    status: 'paused',
-                    currentNumber: (batchIndex + 1) * config.messagesBeforePause,
-                    totalNumbers: finalNumbers.length,
-                    currentBatch: batchIndex + 1,
-                    totalBatches: batches.length,
-                    successCount,
-                    errorCount,
-                    pauseEndTime
-                });
-
-                await new Promise(resolve => setTimeout(resolve, pauseMs));
-            }
-        }
-
-        if (!isCancelled) {
             sendProgressUpdate({
-                status: 'completed',
-                currentNumber: finalNumbers.length,
-                totalNumbers: finalNumbers.length,
-                currentBatch: batches.length,
-                totalBatches: batches.length,
+                status: 'sending',
+                progress,
                 successCount,
-                errorCount
+                errorCount,
+                currentNumber: number,
+                remainingTime: estSeconds
             });
+
+            // Delay Aleatorio Humano: entre 30 y 120 segundos
+            if (processedInThisSession < totalPending && !isCancelled) {
+                const randomDelay = Math.floor(Math.random() * (120000 - 30000 + 1)) + 30000;
+                await new Promise(resolve => setTimeout(resolve, randomDelay));
+            }
         }
 
     } catch (error) {
