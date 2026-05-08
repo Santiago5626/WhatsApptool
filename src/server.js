@@ -135,10 +135,10 @@ function formatPhoneNumber(number) {
 function initializeWhatsAppClient() {
     client = new Client({
         authStrategy: new LocalAuth(),
-        authTimeoutMs: 90000, // Aumentado a 90s para servidores lentos
+        authTimeoutMs: 120000, // 2 minutos para dar margen
         puppeteer: {
             headless: 'new',
-            timeout: 90000, // Tiempo de espera para el arranque del navegador
+            timeout: 120000,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -150,31 +150,43 @@ function initializeWhatsAppClient() {
                 '--disable-extensions',
                 '--disable-software-rasterizer',
                 '--disable-web-security',
-                '--disable-setuid-sandbox',
-                '--js-flags="--max-old-space-size=512"' // Limitar uso de memoria JS
+                '--disable-notifications',
+                '--disable-remote-fonts',
+                '--js-flags="--max-old-space-size=384"' // Dejar margen para el sistema
             ],
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'
         }
     });
 
     client.on('qr', (qr) => {
-        console.log('>>> Nuevo código QR generado y listo para escanear');
         qrCode = qr;
         isAuthenticated = false;
         initializationStatus = 'QR_READY';
+        console.log('>>> Nuevo QR generado. Memoria libre:', Math.round(require('os').freemem() / 1024 / 1024), 'MB');
     });
 
     client.on('authenticated', () => {
-        console.log('>>> Autenticación exitosa: Sesión recibida por el servidor');
+        console.log('>>> Sesión recibida correctamente');
         qrCode = null;
         initializationStatus = 'AUTHENTICATED';
     });
 
+    client.on('auth_failure', msg => {
+        console.error('>>> Error de autenticación:', msg);
+        initializationStatus = 'AUTH_FAILURE';
+    });
+
     client.on('ready', () => {
-        console.log('>>> Cliente WhatsApp listo y conectado');
+        console.log('>>> Cliente WhatsApp CONECTADO y LISTO');
         isAuthenticated = true;
         qrCode = null;
         initializationStatus = 'CONNECTED';
+    });
+
+    client.on('disconnected', (reason) => {
+        console.log('>>> Cliente desconectado:', reason);
+        isAuthenticated = false;
+        initializationStatus = 'DISCONNECTED';
     });
 
     client.on('loading_screen', (percent, message) => {
