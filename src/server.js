@@ -136,7 +136,7 @@ function initializeWhatsAppClient() {
     client = new Client({
         authStrategy: new LocalAuth(),
         puppeteer: {
-            headless: true, // headless: 'new' is default in newer puppeteer, but true works fine here
+            headless: 'new',
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -146,9 +146,10 @@ function initializeWhatsAppClient() {
                 '--no-zygote',
                 '--disable-gpu',
                 '--disable-extensions',
-                '--disable-web-security',
-                '--no-default-browser-check'
-            ]
+                '--disable-software-rasterizer',
+                '--disable-web-security'
+            ],
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'
         }
     });
 
@@ -157,6 +158,12 @@ function initializeWhatsAppClient() {
         qrCode = qr;
         isAuthenticated = false;
         initializationStatus = 'QR_READY';
+    });
+
+    client.on('authenticated', () => {
+        console.log('>>> Autenticación exitosa: Sesión recibida por el servidor');
+        qrCode = null;
+        initializationStatus = 'AUTHENTICATED';
     });
 
     client.on('ready', () => {
@@ -230,6 +237,27 @@ app.use(express.static(path.join(__dirname, 'ui')));
 
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'ui', 'index.html'));
+});
+
+// Endpoint para resetear la sesión si se queda trabada
+app.get('/api/reset-session', requireAuth, async (req, res) => {
+    try {
+        console.log('>>> Solicitud de reinicio de sesión recibida');
+        if (client) {
+            await client.destroy().catch(e => console.log('Error al destruir cliente:', e));
+        }
+        
+        const sessionPath = path.join(__dirname, '..', '.wwebjs_auth');
+        await fs.rm(sessionPath, { recursive: true, force: true });
+        
+        console.log('>>> Sesión eliminada. Reiniciando cliente...');
+        client = initializeWhatsAppClient();
+        
+        res.send('Sesión reiniciada. Por favor, refresca la página principal y escanea el nuevo QR.');
+    } catch (error) {
+        console.error('Error al resetear sesión:', error);
+        res.status(500).send('Error al resetear sesión: ' + error.message);
+    }
 });
 
 app.get('/api/sent-numbers', async (req, res) => {
