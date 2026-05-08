@@ -135,8 +135,10 @@ function formatPhoneNumber(number) {
 function initializeWhatsAppClient() {
     client = new Client({
         authStrategy: new LocalAuth(),
+        authTimeoutMs: 90000, // Aumentado a 90s para servidores lentos
         puppeteer: {
             headless: 'new',
+            timeout: 90000, // Tiempo de espera para el arranque del navegador
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -147,7 +149,9 @@ function initializeWhatsAppClient() {
                 '--disable-gpu',
                 '--disable-extensions',
                 '--disable-software-rasterizer',
-                '--disable-web-security'
+                '--disable-web-security',
+                '--disable-setuid-sandbox',
+                '--js-flags="--max-old-space-size=512"' // Limitar uso de memoria JS
             ],
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'
         }
@@ -576,7 +580,12 @@ app.use((err, req, res, next) => {
     });
 });
 
-const PORT = 3000;
-app.listen(PORT, () => {
-    console.log(`Servidor corriendo en http://localhost:${PORT}`);
+// Manejador de promesas no capturadas para evitar caídas
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('>>> Promesa no capturada detectada:', reason);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Servidor corriendo en el puerto ${PORT}`);
 });
