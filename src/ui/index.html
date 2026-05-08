@@ -395,6 +395,17 @@
         async function checkAuthStatus() {
             try {
                 const response = await fetch('/api/auth-status');
+                
+                if (response.status === 401) {
+                    // Sesión expirada o servidor reiniciado, volver a login
+                    window.location.href = '/login';
+                    return;
+                }
+
+                if (!response.ok) {
+                    throw new Error('Servidor no disponible');
+                }
+
                 const data = await response.json();
 
                 if (data.isAuthenticated) {
@@ -422,7 +433,8 @@
                     displayQR(data.qrCode);
                 }
             } catch (error) {
-                console.error('Error al verificar estado:', error);
+                // No mostrar alerta aquí para no molestar al usuario durante reinicios
+                console.log('Esperando conexión con el servidor...');
             }
         }
 
@@ -861,7 +873,8 @@
         $(document).ready(() => {
             loadCountries();
             checkAuthStatus();
-            checkAuthInterval = setInterval(checkAuthStatus, 1000);
+            // Polling cada 3 segundos para no saturar servidores gratuitos/pequeños
+            checkAuthInterval = setInterval(checkAuthStatus, 3000);
         });
     </script>
 </body>
