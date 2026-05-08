@@ -285,10 +285,16 @@ app.post('/api/clear-sent-log', async (req, res) => {
 });
 
 app.get('/api/auth-status', (req, res) => {
-    console.log('Estado actual:', { isAuthenticated, hasQR: !!qrCode });
+    // Solo loguear si hay un cambio real o cada 15 seg aprox
+    if (!global.lastLogStatus || global.lastLogStatus !== initializationStatus) {
+        console.log(`>>> Estado: ${initializationStatus} | Auth: ${isAuthenticated}`);
+        global.lastLogStatus = initializationStatus;
+    }
+    
     res.json({
         isAuthenticated,
-        qrCode
+        qrCode,
+        initializationStatus
     });
 });
 

@@ -404,6 +404,16 @@
                     document.getElementById('logoutButton').classList.remove('d-none');
                     clearInterval(checkAuthInterval);
                     await loadConfig();
+                } else if (data.initializationStatus === 'AUTHENTICATED') {
+                    // El celular ya escaneó, pero el servidor está procesando la sesión
+                    document.getElementById('qrCode').style.opacity = '0.3';
+                    document.getElementById('qrStatusText').innerHTML = `
+                        <div class="text-success fw-bold">
+                            <i class="fas fa-check-circle"></i> ¡Escaneo detectado!
+                            <br>Sincronizando con WhatsApp... espera unos segundos.
+                        </div>
+                    `;
+                    document.getElementById('qrLoading').classList.remove('d-none');
                 } else if (data.qrCode) {
                     document.getElementById('qrContainer').classList.remove('d-none');
                     document.getElementById('authenticatedInfo').classList.add('d-none');
